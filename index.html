@@ -1,0 +1,221 @@
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title> SLE 칠북공장 품질팀 이슈 메모장</title>
+<style>
+:root{--bg:#f3f4f6;--card:#fff;--ink:#1f2937;--sub:#6b7280;--line:#e5e7eb;--brand:#1e3a5f;--red:#e11d48;--ok:#15803d}
+@media (prefers-color-scheme:dark){:root{--bg:#111827;--card:#1f2937;--ink:#f3f4f6;--sub:#9ca3af;--line:#374151;--brand:#7aa7e0;--red:#fb7185;--ok:#4ade80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Pretendard","Malgun Gothic",system-ui,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+button,select,input,textarea{font:inherit;color:inherit}
+input,select,textarea{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+textarea{min-height:80px;resize:vertical}
+button{padding:9px 14px;border:0;border-radius:8px;background:var(--brand);color:#fff;cursor:pointer}
+button.ghost{background:transparent;color:var(--sub);border:1px solid var(--line)}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
+.login{max-width:380px;margin:12vh auto 0}
+.login label,.form label{display:block;margin:10px 0 4px;font-size:13px;color:var(--sub)}
+.alert{background:var(--red);color:#fff;border-radius:10px;padding:12px 14px;margin-bottom:12px;font-weight:600}
+.day{margin:18px 0 6px;font-size:13px;font-weight:700;color:var(--sub)}
+.memo{position:relative}
+.memo.mine{border-color:var(--red);box-shadow:0 0 0 1px var(--red)}
+.dot{display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--red);margin-right:6px;animation:pulse 1.6s infinite}
+@keyframes pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.dot{animation:none}}
+.memo h3{margin:0 0 4px;font-size:16px}
+.meta{font-size:12px;color:var(--sub)}
+.body{white-space:pre-wrap;margin:8px 0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.chip{font-size:12px;padding:2px 9px;border-radius:99px;border:1px solid var(--line)}
+.chip.wait{background:var(--red);border-color:var(--red);color:#fff}
+.chip.done{color:var(--ok);border-color:var(--ok)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.checks{display:flex;flex-wrap:wrap;gap:6px 14px}
+.checks label{display:flex;align-items:center;gap:5px;margin:0;color:var(--ink);font-size:14px}
+.checks input{width:auto}
+.empty{text-align:center;color:var(--sub);padding:30px 0}
+.err{color:var(--red);font-size:13px;margin-top:8px}
+.tabs{display:flex;gap:6px;margin-bottom:10px}
+.tabs button{background:var(--card);color:var(--ink);border:1px solid var(--line)}
+.tabs button.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+.ph{max-height:140px;max-width:48%;border-radius:8px;margin:4px 4px 0 0;cursor:zoom-in;background:var(--line)}.cm{border-top:1px solid var(--line);margin-top:10px;padding-top:8px}.cm p{margin:4px 0;white-space:pre-wrap;font-size:14px}.cm .ok{color:var(--ok)}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<script>
+/* ===== 설정: 여기만 수정하세요 ===== */
+const OWNER = "jcbyun32";      // 저장소 주인 (아이디 또는 조직명)
+const REPO  = "품질팀 issue";           // 비공개(Private) 저장소 이름
+const MEMBERS = ["이경 실장님","변준철 팀장","전병근 대리","박성진 대리","조현진 사원"]; // 팀원 5명 이름
+const POLL_SEC = 20;                 // 자동 새로고침 간격(초)
+/* =================================== */
+
+const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
+const $app = document.getElementById("app");
+const S = { name: localStorage.getItem("memo_name") || "", token: localStorage.getItem("memo_token") || "", issues: [], tab: "open", err: "", busy: false, open: {}, cm: {}, prev: undefined };
+const IMG = {};
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const today = () => { const d = new Date(); return new Date(d - d.getTimezoneOffset()*6e4).toISOString().slice(0,10); };
+
+async function gh(path, opt = {}) {
+  const r = await fetch(API + path, { ...opt, headers: { Accept: "application/vnd.github+json", Authorization: "Bearer " + S.token, "Content-Type": "application/json" } });
+  if (!r.ok) throw new Error(r.status === 401 ? "토큰이 올바르지 않습니다." : r.status === 404 ? "저장소를 찾을 수 없습니다. 설정과 토큰 권한을 확인하세요." : "오류 " + r.status);
+  return r.status === 204 ? null : r.json();
+}
+
+function parse(i) {
+  const m = i.title.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*(.*)$/);
+  const labels = i.labels.map(l => l.name);
+  const b = i.body || "";
+  const au = (b.match(/^작성:\s*(.+)$/m) || [])[1] || "";
+  return { n: i.number, date: m ? m[1] : i.created_at.slice(0,10), title: m ? m[2] : i.title, author: au, text: b.replace(/^(작성|사진):.*\n?/gm, "").trim(), photos: [...b.matchAll(/^사진:\s*(.+)$/gm)].map(x => x[1].trim()), cmt: i.comments, pending: labels.filter(l => l.startsWith("확인:")).map(l => l.slice(3)), closed: i.state === "closed", url: i.html_url };
+}
+
+async function load() {
+  try {
+    const st = S.tab === "open" ? "open" : "closed";
+    const data = await gh(`/issues?labels=memo&state=${st}&per_page=100&sort=created&direction=desc`);
+    S.issues = data.map(parse).sort((a, b) => b.date.localeCompare(a.date) || b.n - a.n);
+    S.err = "";
+    for (const n of Object.keys(S.open)) if (S.open[n]) S.cm[n] = await gh(`/issues/${n}/comments?per_page=100`);
+    const c = mine().length;
+    if (S.prev !== undefined && c > S.prev && "Notification" in window && Notification.permission === "granted") new Notification("팀 이슈 메모장", { body: `확인이 필요한 이슈 ${c}건` });
+    S.prev = c;
+  } catch (e) { S.err = e.message; }
+  render();
+}
+
+const mine = () => S.issues.filter(m => !m.closed && m.pending.includes(S.name));
+
+function render() {
+  if (!S.name || !S.token) return login();
+  const my = mine();
+  document.title = (my.length ? `(${my.length}) ` : "") + "팀 이슈 메모장";
+  const days = {};
+  [...S.issues].sort((a, b) => (mine().includes(b) - mine().includes(a)) * 0).forEach(m => (days[m.date] = days[m.date] || []).push(m));
+  let h = `<header><h1>${my.length ? '<span class="dot"></span>' : ""}팀 이슈 메모장</h1><div><span class="meta">${esc(S.name)}님</span> <button class="ghost" onclick="logout()">나가기</button></div></header>`;
+  if (my.length) h += `<div class="alert">업무 시작 전 확인이 필요한 이슈가 ${my.length}건 있습니다. 읽고 '확인했습니다'를 눌러 주세요.</div>`;
+  h += `<div class="box form"><b>새 이슈 작성</b>
+    <label>일자</label><input type="date" id="f_date" value="${today()}">
+    <label>제목</label><input id="f_title" maxlength="80" placeholder="예: 3호기 토크 불량 재발">
+    <label>내용</label><textarea id="f_body" placeholder="이슈 내용을 적어 주세요"></textarea>
+    <label>확인이 필요한 사람 (선택한 사람은 확인하기 전까지 빨간점이 유지됩니다)</label>
+    <div class="checks">${MEMBERS.filter(n => n !== S.name).map(n => `<label><input type="checkbox" name="f_to" value="${esc(n)}">${esc(n)}</label>`).join("")}</div>
+    <label>사진 (여러 장 가능)</label><input type="file" id="f_photo" accept="image/*" multiple>
+    <div class="row"><button id="addBtn" onclick="add()">${S.busy ? "저장 중…" : "이슈 등록"}</button></div></div>`;
+  if (S.err) h += `<div class="err">${esc(S.err)}</div>`;
+  h += `<div class="tabs"><button class="${S.tab === "open" ? "on" : ""}" onclick="tab('open')">진행 중</button><button class="${S.tab === "closed" ? "on" : ""}" onclick="tab('closed')">종결</button></div>`;
+  const keys = Object.keys(days).sort().reverse();
+  if (!keys.length) h += `<div class="empty">${S.tab === "open" ? "등록된 이슈가 없습니다. 위에서 첫 이슈를 등록하세요." : "종결된 이슈가 없습니다."}</div>`;
+  keys.forEach(d => {
+    h += `<div class="day">${d}</div>`;
+    days[d].forEach(m => {
+      const isMine = !m.closed && m.pending.includes(S.name);
+      h += `<div class="box memo ${isMine ? "mine" : ""}">
+        <h3>${isMine ? '<span class="dot"></span>' : ""}${esc(m.title)}</h3>
+        <div class="meta">작성 ${esc(m.author || "-")}</div>
+        <div class="body">${esc(m.text)}</div>
+        ${m.photos.map(p => `<img class="ph" data-p="${esc(p)}" alt="첨부 사진" onclick="window.open(this.src)">`).join("")}
+        ${m.pending.length ? `<div class="chips">${m.pending.map(p => `<span class="chip wait">${esc(p)} 미확인</span>`).join("")}</div>` : ""}
+        <div class="row">
+          ${isMine ? `<button onclick="confirmMemo(${m.n})">확인했습니다</button>` : ""}
+          ${!m.closed ? `<button class="ghost" onclick="closeMemo(${m.n})">종결</button>` : `<button class="ghost" onclick="reopen(${m.n})">다시 열기</button>`}
+          <button class="ghost" onclick="toggle(${m.n})">댓글 ${m.cmt}</button>
+          <a class="meta" href="${esc(m.url)}" target="_blank" rel="noopener" style="align-self:center">GitHub에서 보기</a>
+        </div>${S.open[m.n] ? `<div class="cm">${(S.cm[m.n] || []).map(c => `<p class="${c.body.startsWith("✅") ? "ok" : ""}">${esc(c.body)}</p>`).join("") || '<p class="meta">댓글이 없습니다.</p>'}<div class="row"><input id="c${m.n}" class="cin" placeholder="댓글 입력" style="flex:1"><button onclick="postCmt(${m.n})">등록</button></div></div>` : ""}</div>`;
+    });
+  });
+  $app.innerHTML = h; hydrate();
+}
+
+function login() {
+  $app.innerHTML = `<div class="box login"><h1>팀 이슈 메모장</h1>
+    <label>이름</label><select id="l_name"><option value="">이름을 선택하세요</option>${MEMBERS.map(n => `<option ${n === S.name ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+    <label>팀 접속 토큰</label><input id="l_token" type="password" placeholder="팀장에게 받은 토큰" value="${esc(S.token)}">
+    <div class="row"><button onclick="doLogin()">들어가기</button></div><div class="err" id="l_err"></div></div>`;
+}
+
+async function doLogin() {
+  const n = document.getElementById("l_name").value, t = document.getElementById("l_token").value.trim();
+  if (!n || !t) return (document.getElementById("l_err").textContent = "이름과 토큰을 모두 입력하세요.");
+  S.name = n; S.token = t;
+  try { await gh("/labels?per_page=1"); } catch (e) { S.name = S.token = ""; return (document.getElementById("l_err").textContent = e.message); }
+  if ("Notification" in window) Notification.requestPermission();
+  localStorage.setItem("memo_name", n); localStorage.setItem("memo_token", t);
+  load();
+}
+function logout() { localStorage.removeItem("memo_name"); S.name = ""; render(); }
+function tab(t) { S.tab = t; load(); }
+
+async function add() {
+  const date = f_date.value, title = f_title.value.trim(), text = f_body.value.trim();
+  const to = [...document.querySelectorAll("input[name=f_to]:checked")].map(c => c.value);
+  if (!title) return alert("제목을 입력하세요.");
+  const files = [...f_photo.files];
+  S.busy = true; try {
+    const ph = await upload(files);
+    await gh("/issues", { method: "POST", body: JSON.stringify({ title: `[${date}] ${title}`, body: `작성: ${S.name}\n${ph.map(p => "사진: " + p).join("\n")}\n\n${text}`, labels: ["memo", ...to.map(n => "확인:" + n)] }) });
+    S.busy = false; await load();
+  } catch (e) { S.busy = false; S.err = e.message; render(); }
+}
+async function confirmMemo(n) {
+  try {
+    await gh(`/issues/${n}/labels/${encodeURIComponent("확인:" + S.name)}`, { method: "DELETE" });
+    await gh(`/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: `✅ ${S.name} 확인 (${new Date().toLocaleString("ko-KR")})` }) });
+  } catch (e) { S.err = e.message; }
+  load();
+}
+async function closeMemo(n) { if (!confirm("이 이슈를 종결할까요?")) return; try { await gh(`/issues/${n}`, { method: "PATCH", body: JSON.stringify({ state: "closed" }) }); } catch (e) { S.err = e.message; } load(); }
+async function reopen(n) { try { await gh(`/issues/${n}`, { method: "PATCH", body: JSON.stringify({ state: "open" }) }); } catch (e) { S.err = e.message; } load(); }
+
+const dirty = () => ["f_title", "f_body"].some(i => document.getElementById(i)?.value) || document.getElementById("f_photo")?.files.length > 0 || [...document.querySelectorAll(".cin")].some(e => e.value) || ["TEXTAREA", "INPUT", "SELECT"].includes(document.activeElement.tagName);
+
+async function toggle(n) {
+  S.open[n] = !S.open[n];
+  if (S.open[n]) { try { S.cm[n] = await gh(`/issues/${n}/comments?per_page=100`); } catch (e) { S.err = e.message; } }
+  render();
+}
+async function postCmt(n) {
+  const t = document.getElementById("c" + n).value.trim();
+  if (!t) return;
+  try { await gh(`/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: `${S.name}: ${t}` }) }); } catch (e) { S.err = e.message; }
+  load();
+}
+function shrink(file) {
+  return new Promise((ok, no) => {
+    const im = new Image();
+    im.onload = () => { const k = Math.min(1, 1280 / Math.max(im.width, im.height)), c = document.createElement("canvas"); c.width = im.width * k; c.height = im.height * k; c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(im.src); ok(c.toDataURL("image/jpeg", 0.7).split(",")[1]); };
+    im.onerror = () => no(new Error("사진을 읽을 수 없습니다."));
+    im.src = URL.createObjectURL(file);
+  });
+}
+async function upload(files) {
+  const out = [];
+  for (const f of files) {
+    const p = `photos/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.jpg`;
+    await gh("/contents/" + p, { method: "PUT", body: JSON.stringify({ message: "photo by " + S.name, content: await shrink(f) }) });
+    out.push(p);
+  }
+  return out;
+}
+function hydrate() {
+  document.querySelectorAll("img[data-p]").forEach(async im => {
+    const p = im.dataset.p;
+    IMG[p] = IMG[p] || fetch(`${API}/contents/${p}`, { headers: { Accept: "application/vnd.github.raw+json", Authorization: "Bearer " + S.token } }).then(r => r.blob()).then(b => URL.createObjectURL(b));
+    im.src = await IMG[p];
+  });
+}
+
+render();
+if (S.name && S.token) load();
+setInterval(() => { if (S.name && S.token && !document.hidden && !dirty()) load(); }, POLL_SEC * 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && S.name && S.token && !dirty()) load(); });
+</script>
+</body>
+</html>
